@@ -14,11 +14,13 @@ trans_epsilon = 0.001;
 rot_epsilone = 0.1; % deg
 max_distance = 0.2;
 
-debug = false;
+ndt_grid_size = 0.2;
 
-gt_trans_x = 1.0;
-gt_trans_y = 1.5;
-gt_rot_yaw = 30 * pi/180;
+debug = true;
+
+gt_trans_x = 0.5;
+gt_trans_y = 0.5;
+gt_rot_yaw = 0 * pi/180;
 
 
 % pt_cloud_origin = pcread('teapot.ply');
@@ -27,7 +29,7 @@ pt_cloud_origin = data.inputCloud;
 pt_cloud_origin = pcdownsample(pt_cloud_origin,'gridAverage',0.01);
 
 
-method = "point2plane"; % svd, point2point, point2plane
+method = "gicp"; % svd, point2point, point2plane, ndt, gicp
 
 % affine3d input matrix is transpose of general R matrix
 pt_transform_gt = [cos(gt_rot_yaw) sin(gt_rot_yaw) 0 0; ...
@@ -220,6 +222,10 @@ elseif method == "point2point"
     
 elseif method == "point2plane"
     total_transform = zeros(3,1);
+    affine_matrix = [1 0 0 0; ...
+                    0 1 0 0; ...
+                    0 0 1 0; ...
+                    0 0 0 1];
     for iter = 1:max_iter
         fprintf("P2Plane Iter %d \n",iter);
         
@@ -252,9 +258,9 @@ elseif method == "point2plane"
             pd2 = pa * pt_cloud_transformed.Location(i,1) ...
                 + pb * pt_cloud_transformed.Location(i,2) ...
                 + pc * pt_cloud_transformed.Location(i,3) + pd;
-
-            coeffs(i,:) = [pa pb pc];
-            coeff_distances(i) = pd2;
+            weight = 20;
+            coeffs(i,:) = [pa pb pc] * weight;
+            coeff_distances(i) = pd2 * weight;
         end
 
         matA = zeros(numPoints,3);
@@ -296,6 +302,8 @@ elseif method == "point2plane"
                          matX(2) matX(3) 0 1];
     
         tform_iter = affine3d(pt_transform);
+
+        affine_matrix = affine_matrix * pt_transform;
         
         % Transform moving point cloud
         pt_cloud_transformed = pctransform(pt_cloud_transformed,tform_iter);
@@ -311,8 +319,177 @@ elseif method == "point2plane"
             pause(0.1);
         end
     end
+    
+    translation = affine_matrix(4, 1:3);
+    rotationMatrix = affine_matrix(1:3, 1:3);
+    end_pitch = asin(-rotationMatrix(3,1));
+    if cos(end_pitch) ~= 0
+        end_roll = atan2(rotationMatrix(3,2)/cos(end_pitch), rotationMatrix(3,3)/cos(end_pitch));
+        end_yaw = atan2(rotationMatrix(2,1)/cos(end_pitch), rotationMatrix(1,1)/cos(end_pitch));
+    else
+        end_roll = atan2(-rotationMatrix(1,2), rotationMatrix(1,3));
+        end_yaw = 0;  % 자유도 상실
+    end
+
+    fprintf("Total Dyaw: %f, dx %f, dy %f \n",end_yaw*180/pi, translation(1), translation(2));
+    fprintf("Error Dyaw: %f, dx %f, dy %f \n",(gt_rot_yaw + end_yaw)*180/pi, gt_trans_x + translation(1), gt_trans_y + translation(2));
+
+elseif method == "ndt"
+    total_transform = zeros(3,1);
+    
+    % Map Generation
+
+    % Iteration start
+    for iter = 1:max_iter
+    
+    end
+
     fprintf("Total Dyaw: %f, dx %f, dy %f \n",total_transform(1)*180/pi, total_transform(2), total_transform(3));
     fprintf("Error Dyaw: %f, dx %f, dy %f \n",(gt_rot_yaw + total_transform(1))*180/pi, gt_trans_x + total_transform(2), gt_trans_y + total_transform(3));
+
+elseif method == "gicp"
+    total_transform = zeros(3,1);
+    affine_matrix = [1 0 0 0; ...
+                    0 1 0 0; ...
+                    0 0 1 0; ...
+                    0 0 0 1];
+    sourceNumPoints = pt_cloud_transformed.Count;
+    tartgetNumPoints = pt_cloud_origin.Count;
+
+    source_covariances = zeros(3,3,sourceNumPoints);
+    target_covariances = zeros(3,3,tartgetNumPoints);
+
+    source_cov_rotations = zeros(3,3,sourceNumPoints);
+    target_cov_rotations = zeros(3,3,tartgetNumPoints);
+
+    weights = zeros(sourceNumPoints,1);
+    
+    e = 0.3;
+    C = [1 0 0;
+         0 1 0;
+         0 0 e];
+
+    % Target point covariance in advance
+    for i = 1:tartgetNumPoints
+        [indices, distances] = findNearestNeighbors(pt_cloud_origin, pt_cloud_origin.Location(i,:), 5);
+        neighbors = pt_cloud_origin.Location(indices, :);
+        meanPoint = mean(neighbors, 1);
+        centeredPoints = neighbors - meanPoint;
+        covarianceMatrix = (centeredPoints' * centeredPoints) / (size(neighbors, 1) - 1);
+        [V, D] = eig(covarianceMatrix);
+        target_cov_rotations(:,:,i) = V;
+    end
+
+    for iter = 1:max_iter
+        fprintf("GICP Iter %d \n",iter);
+        
+        % Finding corresponding
+        
+        coeffs = zeros(sourceNumPoints,3);
+        coeff_distances = zeros(sourceNumPoints,1);
+        
+        for i = 1:sourceNumPoints
+            % source point covariance
+            [source_indices, source_distances] = findNearestNeighbors(pt_cloud_transformed, pt_cloud_transformed.Location(i,:), 5);
+            neighbors = pt_cloud_transformed.Location(source_indices, :);
+            meanPoint = mean(neighbors, 1);
+            centeredPoints = neighbors - meanPoint;
+            covarianceMatrix = (centeredPoints' * centeredPoints) / (size(neighbors, 1) - 1);
+            [V, D] = eig(covarianceMatrix);
+            source_cov_rotations(:,:,i) = V;
+            
+            % find nearest target covariance
+            [target_indice, target_distance] = findNearestNeighbors(pt_cloud_origin, pt_cloud_transformed.Location(i,:), 1);
+            
+            source_rotation = source_cov_rotations(:,:,i);
+            target_rotation = target_cov_rotations(:,:,target_indice);
+
+            
+            
+          
+            dist_vec = (pt_cloud_transformed.Location(i,:)' - pt_cloud_origin.Location(target_indice,:)');
+                        coeff_norm = sqrt(dist_vec(1)*dist_vec(1) + dist_vec(2)*dist_vec(2));
+
+            Ca = source_rotation*C*source_rotation';
+            Cb = target_rotation*C*target_rotation';
+            
+            weight = dist_vec'*inv(Ca + Cb) * dist_vec;
+            weights(i) = weight;
+            
+            coeffs(i,:) = dist_vec / coeff_norm * weight;
+            coeff_distances(i) = target_distance * weight;
+        end
+
+        matA = zeros(sourceNumPoints,3);
+        matAt = zeros(3,sourceNumPoints);
+        matAtA = zeros(3,3);
+        matB = zeros(sourceNumPoints,1);
+        matAtB = zeros(3,1);
+        matAtAdiag = zeros(3,3);
+        matX = zeros(3,1); % yaw x y 
+      
+        % Calculate residual vector
+        for i = 1:sourceNumPoints
+
+            rot_yaw = pt_cloud_transformed.Location(i,1) * (coeffs(i,2)) ...
+                    - pt_cloud_transformed.Location(i,2) * (coeffs(i,1));
+
+            matA(i,1) = rot_yaw;
+            matA(i,2) = coeffs(i,1);
+            matA(i,3) = coeffs(i,2);
+            matB(i,1) = -coeff_distances(i);
+        end
+
+        % LM Optimization
+        matAt = matA';
+        
+        diagonal = diag(matAt * matA);
+        matAtAdiag = diag(diagonal);
+
+        matAtA = matAt * matA + lambda * matAtAdiag;
+        matAtB = matAt * matB; 
+        
+        matX = matAtA \ matAtB;
+
+        fprintf("Dyaw: %f, dx %f, dy %f \n",matX(1)*180/pi, matX(2), matX(3));
+
+        pt_transform = [cos(matX(1)) sin(matX(1)) 0 0; ...
+                       -sin(matX(1)) cos(matX(1)) 0 0; ...
+                         0 0 1 0; ...
+                         matX(2) matX(3) 0 1];
+    
+        tform_iter = affine3d(pt_transform);
+
+        affine_matrix = affine_matrix * pt_transform;
+        
+        % Transform moving point cloud
+        pt_cloud_transformed = pctransform(pt_cloud_transformed,tform_iter);
+
+        total_transform = total_transform + matX;
+
+        if abs(matX(2)) < trans_epsilon && abs(matX(3)) < trans_epsilon && abs(matX(1))*180/pi < rot_epsilone
+            break
+        end
+
+        if debug == true
+            pcshowpair(pt_cloud_origin,pt_cloud_transformed,'VerticalAxis','Z','VerticalAxisDir','Up');
+            pause(0.1);
+        end
+    end
+    
+    translation = affine_matrix(4, 1:3);
+    rotationMatrix = affine_matrix(1:3, 1:3);
+    end_pitch = asin(-rotationMatrix(3,1));
+    if cos(end_pitch) ~= 0
+        end_roll = atan2(rotationMatrix(3,2)/cos(end_pitch), rotationMatrix(3,3)/cos(end_pitch));
+        end_yaw = atan2(rotationMatrix(2,1)/cos(end_pitch), rotationMatrix(1,1)/cos(end_pitch));
+    else
+        end_roll = atan2(-rotationMatrix(1,2), rotationMatrix(1,3));
+        end_yaw = 0;  % 자유도 상실
+    end
+
+    fprintf("Total Dyaw: %f, dx %f, dy %f \n",end_yaw*180/pi, translation(1), translation(2));
+    fprintf("Error Dyaw: %f, dx %f, dy %f \n",(gt_rot_yaw + end_yaw)*180/pi, gt_trans_x + translation(1), gt_trans_y + translation(2));
 end
 
 %% Display the Original and Affine Transformed 3-D Point Clouds
