@@ -8,39 +8,39 @@ clear; clc; close all;
 
 %% Loading Point Cloud & Configure
 
-lambda = 0.0;
+% Configure
+lambda = 0.0; % lambda for LM optimization. If 0, Gauss-Newton
 max_iter = 50;
-trans_epsilon = 0.001;
+trans_epsilon = 0.001; % meter
 rot_epsilone = 0.1; % deg
-max_distance = 0.2;
+max_distance = 0.2; % Not used now
 
-ndt_grid_size = 0.2;
+ndt_grid_size = 0.2; % Not used now
 
-debug = true;
+debug = true; % If true, show ICP progress in visualiation
 
-gt_trans_x = 0.5;
-gt_trans_y = 0.5;
-gt_rot_yaw = 0 * pi/180;
+% Target, Moving ground truth transformation
+gt_trans_x = 1.0;
+gt_trans_y = 1.5;
+gt_rot_yaw = 25 * pi/180; 
 
-
-% pt_cloud_origin = pcread('teapot.ply');
+% Loading Point Cloud
 data = load('PointCloudwithNoise.mat');  % 'example.mat' 파일에서 데이터 불러오기
 pt_cloud_origin = data.inputCloud;
 pt_cloud_origin = pcdownsample(pt_cloud_origin,'gridAverage',0.01);
 
-
-method = "gicp"; % svd, point2point, point2plane, ndt, gicp
+method = "point2plane"; % svd, point2point, point2plane, ndt, gicp
 
 % affine3d input matrix is transpose of general R matrix
-pt_transform_gt = [cos(gt_rot_yaw) sin(gt_rot_yaw) 0 0; ...
+gt_transform_matrix = [cos(gt_rot_yaw) sin(gt_rot_yaw) 0 0; ...
                  -sin(gt_rot_yaw) cos(gt_rot_yaw) 0 0; ...
                  0 0 1 0; ...
                  gt_trans_x gt_trans_y 0 1];
 
-tform_gt = affine3d(pt_transform_gt);
+gt_transform_affine = affine3d(gt_transform_matrix);
 
 % Transform moving point cloud
-pt_cloud_moving = pctransform(pt_cloud_origin,tform_gt);
+pt_cloud_moving = pctransform(pt_cloud_origin,gt_transform_affine);
 
 % Downsampling
 pt_cloud_moving_ds = pcdownsample(pt_cloud_moving,'gridAverage',0.02);
@@ -65,6 +65,7 @@ fprintf('Moving point Num %d \n',pt_cloud_moving_ds.Count);
 
 pt_cloud_transformed = pt_cloud_moving_ds;
 
+% SVD
 if method == "svd"
     % 1. SVD Based
     for iter = 1:max_iter
@@ -137,6 +138,8 @@ if method == "svd"
         pt_cloud_transformed = pctransform(pt_cloud_transformed,tform_iter);
     
     end
+
+% Point to Point
 elseif method == "point2point"
     total_transform = zeros(3,1);
     for iter = 1:max_iter
@@ -219,7 +222,8 @@ elseif method == "point2point"
     end
     fprintf("Total Dyaw: %f, dx %f, dy %f \n",total_transform(1)*180/pi, total_transform(2), total_transform(3));
     fprintf("Error Dyaw: %f, dx %f, dy %f \n",(gt_rot_yaw + total_transform(1))*180/pi, gt_trans_x + total_transform(2), gt_trans_y + total_transform(3));
-    
+  
+% Point to Plane
 elseif method == "point2plane"
     total_transform = zeros(3,1);
     affine_matrix = [1 0 0 0; ...
@@ -334,6 +338,7 @@ elseif method == "point2plane"
     fprintf("Total Dyaw: %f, dx %f, dy %f \n",end_yaw*180/pi, translation(1), translation(2));
     fprintf("Error Dyaw: %f, dx %f, dy %f \n",(gt_rot_yaw + end_yaw)*180/pi, gt_trans_x + translation(1), gt_trans_y + translation(2));
 
+% NDT (TODO)
 elseif method == "ndt"
     total_transform = zeros(3,1);
     
@@ -347,6 +352,7 @@ elseif method == "ndt"
     fprintf("Total Dyaw: %f, dx %f, dy %f \n",total_transform(1)*180/pi, total_transform(2), total_transform(3));
     fprintf("Error Dyaw: %f, dx %f, dy %f \n",(gt_rot_yaw + total_transform(1))*180/pi, gt_trans_x + total_transform(2), gt_trans_y + total_transform(3));
 
+% GICP
 elseif method == "gicp"
     total_transform = zeros(3,1);
     affine_matrix = [1 0 0 0; ...
