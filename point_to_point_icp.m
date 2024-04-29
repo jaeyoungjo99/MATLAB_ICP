@@ -11,7 +11,7 @@ clear; clc; close all;
 % Configure
 lambda = 0.0; % lambda for LM optimization. If 0, Gauss-Newton
 max_iter = 50;
-trans_epsilon = 0.001; % meter
+trans_epsilon = 0.005; % meter
 rot_epsilone = 0.1; % deg
 max_distance = 0.2; % Not used now
 
@@ -27,9 +27,23 @@ gt_rot_yaw = 25 * pi/180;
 % Loading Point Cloud
 data = load('PointCloudwithNoise.mat');  % 'example.mat' 파일에서 데이터 불러오기
 pt_cloud_origin = data.inputCloud;
-pt_cloud_origin = pcdownsample(pt_cloud_origin,'gridAverage',0.01);
+pt_cloud_origin = pcdownsample(pt_cloud_origin,'gridAverage',0.01); % Downsample 1cm
 
-method = "point2plane"; % svd, point2point, point2plane, ndt, gicp
+% Cut
+% Define x range
+x_min = 0.4;
+x_max = 0.6;
+
+% Extract points within the specified x range
+locations = pt_cloud_origin.Location;  % Get all points' locations
+indices = locations(:,2) >= x_min & locations(:,2) <= x_max;  % Logical indexing for x range
+
+% Create a new point cloud with points within the x range
+filtered_pt_cloud = select(pt_cloud_origin, find(indices));
+pt_cloud_origin = filtered_pt_cloud;
+
+% Method
+method = "point2point"; % svd, point2point, point2plane, ndt, gicp
 
 % affine3d input matrix is transpose of general R matrix
 gt_transform_matrix = [cos(gt_rot_yaw) sin(gt_rot_yaw) 0 0; ...
@@ -43,7 +57,7 @@ gt_transform_affine = affine3d(gt_transform_matrix);
 pt_cloud_moving = pctransform(pt_cloud_origin,gt_transform_affine);
 
 % Downsampling
-pt_cloud_moving_ds = pcdownsample(pt_cloud_moving,'gridAverage',0.02);
+pt_cloud_moving_ds = pcdownsample(pt_cloud_moving,'gridAverage',0.02); % Downsample 2cm
 
 %% Original Display
 
@@ -196,6 +210,10 @@ elseif method == "point2point"
         
         matX = matAtA \ matAtB;
 
+        [E, V] = eig(matAtA);
+        fprintf("Eigen Value yaw, x, y \n");
+        disp(diag(V));
+
         fprintf("Dyaw: %f, dx %f, dy %f \n",matX(1)*180/pi, matX(2), matX(3));
 
         pt_transform = [cos(matX(1)) sin(matX(1)) 0 0; ...
@@ -297,6 +315,10 @@ elseif method == "point2plane"
         matAtB = matAt * matB; 
         
         matX = matAtA \ matAtB;
+        
+        [E, V] = eig(matAtA);
+        fprintf("Eigen Value yaw, x, y \n");
+        disp(diag(V));
 
         fprintf("Dyaw: %f, dx %f, dy %f \n",matX(1)*180/pi, matX(2), matX(3));
 
@@ -456,6 +478,10 @@ elseif method == "gicp"
         matAtB = matAt * matB; 
         
         matX = matAtA \ matAtB;
+
+        [E, V] = eig(matAtA);
+        fprintf("Eigen Value yaw, x, y \n");
+        disp(diag(V));
 
         fprintf("Dyaw: %f, dx %f, dy %f \n",matX(1)*180/pi, matX(2), matX(3));
 
